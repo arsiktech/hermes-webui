@@ -222,6 +222,66 @@ def test_unbound_session_keeps_aggregate_and_enrollment_authority(monkeypatch):
     assert routes._require_passkey_registration_auth(handler) == (True, "", 200)
 
 
+def _post_settings_as_trusted(monkeypatch, body, *, bound=True):
+    import api.passkeys as passkeys
+
+    _trusted_env(monkeypatch, groups_header="Remote-Groups" if bound else None,
+                 group_map={"team-a": "audit-a"} if bound else None)
+    handler = _Handler(headers={"Remote-User": "alice", "Remote-Groups": "team-a"})
+    handler.command = "POST"
+    auth.ensure_trusted_auth_session(handler)
+    handler.headers["Cookie"] = "hermes_session=" + handler._trusted_auth_session_cookie_value
+    writes, clears = [], []
+    monkeypatch.setattr(routes, "_check_csrf", lambda _handler: True)
+    monkeypatch.setattr(routes, "read_body", lambda _handler: dict(body))
+    monkeypatch.setattr(auth, "get_password_hash", lambda: None)
+    monkeypatch.setattr(auth, "_passkey_feature_flag_enabled", lambda: True)
+    monkeypatch.setattr(passkeys, "registered_credentials", lambda: [{"id": "dummy-global-factor"}])
+    monkeypatch.setattr(passkeys, "clear_credentials", lambda: clears.append(True))
+
+    def save(settings):
+        writes.append(sorted(settings))
+        return {key: value for key, value in settings.items() if not key.startswith("_")}
+
+    monkeypatch.setattr(routes, "save_settings", save)
+    routes.handle_post(handler, SimpleNamespace(path="/api/settings", query=""))
+    return handler, writes, clears
+
+
+@pytest.mark.parametrize("body", [
+    {"_set_password": "dummy-global-password"},
+    {"_clear_password": True},
+    {"_passwordless": True},
+])
+def test_bound_session_cannot_mutate_global_password_factors(monkeypatch, body):
+    handler, writes, clears = _post_settings_as_trusted(monkeypatch, body)
+    assert handler.status == 403, handler.body_text()
+    assert writes == []
+    assert clears == []
+
+
+def test_bound_session_keeps_ordinary_settings_writes(monkeypatch):
+    handler, writes, clears = _post_settings_as_trusted(monkeypatch, {"theme": "light"})
+    assert handler.status == 200, handler.body_text()
+    assert writes
+    assert clears == []
+
+
+def test_unbound_session_keeps_password_factor_writes(monkeypatch):
+    handler, writes, clears = _post_settings_as_trusted(monkeypatch, {"_set_password": "dummy-global-password"}, bound=False)
+    assert handler.status == 200, handler.body_text()
+    assert writes
+    assert clears == []
+
+
+def test_bound_session_cannot_delete_global_passkeys(monkeypatch):
+    _trusted_env(monkeypatch, groups_header="Remote-Groups", group_map={"team-a": "audit-a"})
+    handler = _Handler(headers={"Remote-User": "alice", "Remote-Groups": "team-a"})
+    handler.command = "POST"
+    assert auth.check_auth(handler, SimpleNamespace(path="/api/auth/passkey/delete", query="")) is False
+    assert handler.status == 403
+
+
 def test_group_map_binds_profile(monkeypatch):
     _trusted_env(
         monkeypatch,

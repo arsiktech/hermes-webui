@@ -1248,6 +1248,7 @@ def check_auth(handler, parsed) -> bool:
                 _all_profiles_query_flag(parsed)
                 or (handler.command == 'POST' and parsed.path in {
                     '/api/profile/create', '/api/profile/delete',
+                    '/api/auth/passkey/delete',
                 })
             )
         if instance_wide_request or not trusted_session_allows_active_profile(session_info):

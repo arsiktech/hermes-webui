@@ -19987,6 +19987,12 @@ def handle_post(handler, parsed) -> bool:
         )
         requested_passwordless = bool(body.pop("_passwordless", False))
         requested_clear_password = bool(body.get("_clear_password") or requested_passwordless)
+        if requested_password or requested_clear_password:
+            from api.auth import ensure_trusted_auth_session
+
+            session_info = ensure_trusted_auth_session(handler)
+            if str((session_info or {}).get("bound_profile") or "").strip():
+                return bad(handler, "Instance-wide authentication changes require an unbound session", 403)
         if requested_passwordless:
             body["_clear_password"] = True
 
