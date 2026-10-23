@@ -176,6 +176,52 @@ def test_allowlisted_peer_header_creates_trusted_session(monkeypatch):
     assert not any(cookie.startswith("hermes_profile=") for cookie in pending)
 
 
+@pytest.mark.parametrize("path", ["/api/projects", "/api/sessions", "/api/sessions/search", "/api/sessions/events"])
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+def test_bound_session_cannot_request_aggregate_profiles(monkeypatch, path, value):
+    _trusted_env(monkeypatch, groups_header="Remote-Groups", group_map={"team-a": "audit-a"})
+    handler = _Handler(headers={"Remote-User": "alice", "Remote-Groups": "team-a"})
+    assert auth.check_auth(handler, SimpleNamespace(path=path, query="all_profiles=" + value)) is False
+    assert handler.status == 403
+    assert profiles.get_active_profile_name() == "audit-a"
+
+
+@pytest.mark.parametrize("path", ["/api/profile/create", "/api/profile/delete"])
+def test_bound_session_cannot_manage_global_profiles(monkeypatch, path):
+    _trusted_env(monkeypatch, groups_header="Remote-Groups", group_map={"team-a": "audit-a"})
+    handler = _Handler(headers={"Remote-User": "alice", "Remote-Groups": "team-a"})
+    handler.command = "POST"
+    assert auth.check_auth(handler, SimpleNamespace(path=path, query="")) is False
+    assert handler.status == 403
+
+
+def test_bound_session_cannot_enroll_global_passkey(monkeypatch):
+    _trusted_env(monkeypatch, groups_header="Remote-Groups", group_map={"team-a": "audit-a"})
+    handler = _Handler(headers={"Remote-User": "alice", "Remote-Groups": "team-a"})
+    info = auth.ensure_trusted_auth_session(handler)
+    cookie = handler._trusted_auth_session_cookie_value
+    handler.headers["Cookie"] = f"hermes_session={cookie}"
+    assert info["bound_profile"] == "audit-a"
+    assert routes._require_passkey_registration_auth(handler) == (
+        False, "Instance-wide passkey enrollment requires an unbound session", 403
+    )
+
+
+@pytest.mark.parametrize("query", ["", "all_profiles=0", "all_profiles=false"])
+def test_bound_session_keeps_scoped_reads(monkeypatch, query):
+    _trusted_env(monkeypatch, groups_header="Remote-Groups", group_map={"team-a": "audit-a"})
+    handler = _Handler(headers={"Remote-User": "alice", "Remote-Groups": "team-a"})
+    assert auth.check_auth(handler, SimpleNamespace(path="/api/sessions", query=query)) is True
+
+
+def test_unbound_session_keeps_aggregate_and_enrollment_authority(monkeypatch):
+    _trusted_env(monkeypatch)
+    handler = _Handler(headers={"Remote-User": "owner"})
+    assert auth.check_auth(handler, SimpleNamespace(path="/api/sessions", query="all_profiles=1")) is True
+    handler.headers["Cookie"] = "hermes_session=" + handler._trusted_auth_session_cookie_value
+    assert routes._require_passkey_registration_auth(handler) == (True, "", 200)
+
+
 def test_group_map_binds_profile(monkeypatch):
     _trusted_env(
         monkeypatch,
